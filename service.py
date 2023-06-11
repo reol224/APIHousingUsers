@@ -4,7 +4,8 @@ from flask import Flask, request, jsonify, session
 from flask_bcrypt import Bcrypt
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from datetime import timedelta
+from datetime import timedelta, datetime
+from flask_wtf import CSRFProtect
 import configparser
 import os
 import re
@@ -13,6 +14,9 @@ import bleach
 app = Flask(__name__)
 config = configparser.ConfigParser()
 config.read('config.ini')
+
+# Set up CSRF protection
+csrf = CSRFProtect(app)
 
 app.secret_key = os.urandom(24)  # Set a secret key for session encryption
 # Set session timeout to 30 minutes
@@ -32,6 +36,59 @@ bcrypt = Bcrypt(app)
 app.config['RATE_LIMIT_MESSAGE'] = 'Too many login attempts. Please try again later.'
 limiter = Limiter(get_remote_address)
 limiter.init_app(app)
+
+# Set the maximum number of failed login attempts before locking the account
+MAX_LOGIN_ATTEMPTS = 5
+
+# Set the lockout duration in minutes
+LOCKOUT_DURATION = 10
+
+
+def lockout_account(username):
+    # Set the account lockout flag and lockout expiration time in the database
+    conn = get_mysql_connection()
+    cursor = conn.cursor()
+
+    try:
+        lockout_time = datetime.now() + timedelta(minutes=LOCKOUT_DURATION)
+        cursor.execute("UPDATE customers SET is_locked = true, lockout_expiration = %s WHERE username = %s",
+                       (lockout_time, username))
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def unlock_account(username):
+    # Clear the account lockout flag and lockout expiration time in the database
+    conn = get_mysql_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("UPDATE customers SET is_locked = false, lockout_expiration = NULL WHERE username = %s",
+                       (username,))
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def is_account_locked(username):
+    # Check if the account is locked based on the lockout expiration time
+    conn = get_mysql_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute("SELECT is_locked, lockout_expiration FROM customers WHERE username = %s", (username,))
+        user = cursor.fetchone()
+
+        if user and user['is_locked'] and user['lockout_expiration'] >= datetime.now():
+            return True
+        else:
+            return False
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def get_mysql_connection():
@@ -88,6 +145,7 @@ def message():
 
 
 @app.route('/register', methods=['POST'])
+@csrf.exempt  # Exempt CSRF protection for the registration route
 def register():
     data = request.get_json()
     username = sanitize_input(data['username'])
@@ -134,6 +192,7 @@ def register():
 
 
 @app.route('/login', methods=['POST'])
+@csrf.exempt  # Exempt CSRF protection for the registration route
 @limiter.limit("5/minute")
 @limiter.limit(app.config['RATE_LIMIT_MESSAGE'], error_message=app.config['RATE_LIMIT_MESSAGE'])
 def login():
@@ -144,6 +203,10 @@ def login():
 
         conn = get_mysql_connection()
         cursor = conn.cursor(dictionary=True)
+
+        # Check if the account is locked
+        if is_account_locked(username):
+            return jsonify({'message': 'Login failed', 'error': 'Account is locked. Please try again later.'}), 401
 
         try:
             # Check if the user exists in the database
@@ -167,6 +230,14 @@ def login():
                     return jsonify({'message': 'Login successful'})
                 else:
                     # Incorrect password
+                    # Increment the login attempt count and lock the account if the maximum attempts is reached
+                    cursor.execute("UPDATE customers SET login_attempts = login_attempts + 1 WHERE username = %s",
+                                   (username,))
+                    conn.commit()
+
+                    if user['login_attempts'] >= MAX_LOGIN_ATTEMPTS:
+                        lockout_account(username)
+
                     return jsonify({'message': 'Login failed', 'error': 'Invalid username or password'}), 401
             else:
                 # User not found
