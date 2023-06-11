@@ -1,16 +1,24 @@
-import configparser
-import bleach
 import mysql.connector
-import re
-from flask import Flask, request, jsonify
+import mysql.connector
+from flask import Flask, request, jsonify, session
 from flask_bcrypt import Bcrypt
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from datetime import timedelta
+import configparser
+import os
+import re
+import bleach
 
 app = Flask(__name__)
 config = configparser.ConfigParser()
 config.read('config.ini')
 
+app.secret_key = os.urandom(24)  # Set a secret key for session encryption
+# Set session timeout to 30 minutes
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
+
+# Set up MySQL connection
 db_config = config['database']
 app.config['MYSQL_HOST'] = db_config['host']
 app.config['MYSQL_PORT'] = int(db_config.get('port'))
@@ -66,10 +74,16 @@ def is_strong_password(password):
     return True
 
 
-@app.route("/message", methods=["GET"])
+def regenerate_session():
+    # Regenerate session identifier on login or logout to prevent session fixation attacks
+    session.clear()
+    session.modified = True
+
+
+@app.route('/message', methods=['GET'])
 def message():
     posted_data = request.get_json()
-    name = posted_data['name']
+    name = sanitize_input(posted_data['name'])
     return jsonify(" Hope you are having a good time " + name + "!!!")
 
 
@@ -125,8 +139,8 @@ def register():
 def login():
     try:
         data = request.get_json()
-        username = data['username']
-        password = data['password']
+        username = sanitize_input(data['username'])
+        password = sanitize_input(data['password'])
 
         conn = get_mysql_connection()
         cursor = conn.cursor(dictionary=True)
@@ -141,6 +155,13 @@ def login():
                 if bcrypt.check_password_hash(user['password'], password):
                     # Perform additional security checks here if needed (e.g., account locked, two-factor authentication)
                     # ...
+
+                    # Regenerate session identifier
+                    regenerate_session()
+
+                    # Set user data in the session
+                    session['user_id'] = user['id']
+                    session['username'] = user['username']
 
                     # Authentication successful
                     return jsonify({'message': 'Login successful'})
@@ -157,6 +178,17 @@ def login():
             conn.close()
     except Exception as e:
         return jsonify({'message': 'Login failed', 'error': str(e)}), 500
+
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    if 'user_id' in session:
+        # Clear session data
+        session.clear()
+        session.modified = True
+        return jsonify({'message': 'Logout successful'})
+    else:
+        return jsonify({'message': 'Logout failed', 'error': 'User not logged in'}), 401
 
 
 if __name__ == '__main__':
