@@ -1,3 +1,5 @@
+import configparser
+
 import mysql.connector
 from flask import Flask, request, jsonify
 from flask_bcrypt import Bcrypt
@@ -5,11 +7,15 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 app = Flask(__name__)
-app.config['MYSQL_HOST'] = 'localhost'
-app.config['MYSQL_PORT'] = 3306
-app.config['MYSQL_USER'] = 'root'
-app.config['MYSQL_PASSWORD'] = 'root'
-app.config['MYSQL_DB'] = 'housing'
+config = configparser.ConfigParser()
+config.read('config.ini')
+
+db_config = config['database']
+app.config['MYSQL_HOST'] = db_config['host']
+app.config['MYSQL_PORT'] = int(db_config.get('port'))
+app.config['MYSQL_USER'] = db_config['user']
+app.config['MYSQL_PASSWORD'] = db_config['password']
+app.config['MYSQL_DB'] = db_config['database']
 
 bcrypt = Bcrypt(app)
 
