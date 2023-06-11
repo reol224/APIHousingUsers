@@ -1,6 +1,7 @@
 import configparser
 import bleach
 import mysql.connector
+import re
 from flask import Flask, request, jsonify
 from flask_bcrypt import Bcrypt
 from flask_limiter import Limiter
@@ -41,6 +42,30 @@ def sanitize_input(input_string):
     return sanitized_input
 
 
+def is_strong_password(password):
+    # Check if the password meets the minimum length requirement
+    if len(password) < 8:
+        return False
+
+    # Check if the password contains at least one uppercase letter
+    if not re.search(r'[A-Z]', password):
+        return False
+
+    # Check if the password contains at least one lowercase letter
+    if not re.search(r'[a-z]', password):
+        return False
+
+    # Check if the password contains at least one digit
+    if not re.search(r'\d', password):
+        return False
+
+    # Check if the password contains at least one special character
+    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+        return False
+
+    return True
+
+
 @app.route("/message", methods=["GET"])
 def message():
     posted_data = request.get_json()
@@ -57,6 +82,12 @@ def register():
     # Check if the username or password is empty
     if not username or not password:
         return jsonify({'message': 'Registration failed', 'error': 'Username or password cannot be empty'}), 400
+
+    # Check if the password meets the strong password criteria
+    if not is_strong_password(password):
+        return jsonify({'message': 'Registration failed',
+                        'error': 'Password is weak. It must contain at least 8 characters, including uppercase, '
+                                 'lowercase, digit, and special characters.'}), 400
 
     # Hash the password
     hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
