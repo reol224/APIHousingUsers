@@ -1,5 +1,5 @@
 import configparser
-
+import bleach
 import mysql.connector
 from flask import Flask, request, jsonify
 from flask_bcrypt import Bcrypt
@@ -35,6 +35,12 @@ def get_mysql_connection():
     )
 
 
+def sanitize_input(input_string):
+    # Remove HTML tags and sanitize input
+    sanitized_input = bleach.clean(input_string, tags=[], attributes={}, protocols=[], strip=True)
+    return sanitized_input
+
+
 @app.route("/message", methods=["GET"])
 def message():
     posted_data = request.get_json()
@@ -45,8 +51,8 @@ def message():
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
-    username = data['username']
-    password = data['password']
+    username = sanitize_input(data['username'])
+    password = sanitize_input(data['password'])
 
     # Check if the username or password is empty
     if not username or not password:
@@ -66,8 +72,10 @@ def register():
         if existing_user:
             return jsonify({'message': 'Registration failed', 'error': 'Username already exists'}), 400
 
-        # Insert the new user into the database
-        cursor.execute("INSERT INTO customers (username, password) VALUES (%s, %s)", (username, hashed_password))
+        # Insert the new user into the database using parameterized query
+        insert_query = "INSERT INTO customers (username, password) VALUES (%s, %s)"
+        insert_data = (username, hashed_password)
+        cursor.execute(insert_query, insert_data)
         conn.commit()
 
         return jsonify({'message': 'Registration successful'}), 200
