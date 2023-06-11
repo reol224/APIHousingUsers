@@ -1,6 +1,8 @@
 import mysql.connector
 from flask import Flask, request, jsonify
 from flask_bcrypt import Bcrypt
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 app = Flask(__name__)
 app.config['MYSQL_HOST'] = 'localhost'
@@ -10,6 +12,11 @@ app.config['MYSQL_PASSWORD'] = 'root'
 app.config['MYSQL_DB'] = 'housing'
 
 bcrypt = Bcrypt(app)
+
+# Set up rate limiting
+app.config['RATE_LIMIT_MESSAGE'] = 'Too many login attempts. Please try again later.'
+limiter = Limiter(get_remote_address)
+limiter.init_app(app)
 
 
 def get_mysql_connection():
@@ -68,23 +75,43 @@ def register():
 
 
 @app.route('/login', methods=['POST'])
+@limiter.limit("5/minute")
+@limiter.limit(app.config['RATE_LIMIT_MESSAGE'], error_message=app.config['RATE_LIMIT_MESSAGE'])
 def login():
-    data = request.get_json()
-    username = data['username']
-    password = data['password']
+    try:
+        data = request.get_json()
+        username = data['username']
+        password = data['password']
 
-    conn = get_mysql_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM customers WHERE username = %s AND password = %s", (username, password))
-    user = cursor.fetchone()
+        conn = get_mysql_connection()
+        cursor = conn.cursor(dictionary=True)
 
-    cursor.close()
-    conn.close()
+        try:
+            # Check if the user exists in the database
+            cursor.execute("SELECT * FROM customers WHERE username = %s", (username,))
+            user = cursor.fetchone()
 
-    if user:
-        return jsonify({'message': 'Login successful'})
-    else:
-        return jsonify({'message': 'Login failed', 'error': 'Invalid username or password'}), 401
+            if user:
+                # Verify the password using bcrypt
+                if bcrypt.check_password_hash(user['password'], password):
+                    # Perform additional security checks here if needed (e.g., account locked, two-factor authentication)
+                    # ...
+
+                    # Authentication successful
+                    return jsonify({'message': 'Login successful'})
+                else:
+                    # Incorrect password
+                    return jsonify({'message': 'Login failed', 'error': 'Invalid username or password'}), 401
+            else:
+                # User not found
+                return jsonify({'message': 'Login failed', 'error': 'Invalid username or password'}), 401
+        except mysql.connector.Error as error:
+            return jsonify({'message': 'Login failed', 'error': str(error)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception as e:
+        return jsonify({'message': 'Login failed', 'error': str(e)}), 500
 
 
 if __name__ == '__main__':
